@@ -1,8 +1,19 @@
 import io
-from flask import Flask, request, send_file, Response
+from flask import Flask, request, send_file, Response, render_template, jsonify
+from flask_sockets import Sockets
 
+from google.protobuf.json_format import MessageToJson
 from desmond.thought import DesmondNode
 from desmond import types
+
+# This is definitely NOT the right way to do this. What's the right way to
+# share protocols? For the actuators, we send a definition of the protocol from
+# the receiver to the commander. Another option is to simply have a lightweight
+# github repository (or similar) of types that can be pulled in when needed.
+# But this is an instance of centralization that would be nice to avoid. But
+# then again, how do you know the *name* of the type at all, and do anything
+# useful with it. For now, we comprimise here for the sake of the dashboard.
+from desmond.contrib import FaceDetection
 
 node = None
 def get_encoded_image():
@@ -26,11 +37,32 @@ def gen():
                b'Content-Type: image/jpeg\r\n\r\n' + frame +
                b'\r\n')
 
+
+facenode = None
+def facenode_instance():
+    global facenode
+    if facenode is None:
+        facenode = DesmondNode("Faces", [FaceDetection], None)
+    return facenode
+
 app = Flask(__name__)
+sockets = Sockets(app)
+
+@app.route('/data')
+def data():
+    return jsonify({})
 
 @app.route('/')
 def welcome():
-    return "Server is up!"
+    return render_template("index.html")
+
+@sockets.route("/FaceDetection")
+def face_detect(ws):
+    while not ws.closed:
+        data = facenode_instance().recv_or_none(100)
+        if data:
+            json_string = MessageToJson(data)
+            ws.send(json_string)
 
 @app.route('/image')
 def hello_world():
@@ -49,4 +81,8 @@ def feed():
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0')
+    from gevent import pywsgi
+    from geventwebsocket.handler import WebSocketHandler
+    server = pywsgi.WSGIServer(('0.0.0.0', 5000), app, handler_class=WebSocketHandler)
+    server.serve_forever()
+
